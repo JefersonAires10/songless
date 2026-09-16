@@ -5,6 +5,18 @@ const catalogCache = new Map();
 const pendingRequests = new Map();
 
 /**
+ * Embaralha array com Fisher-Yates
+ */
+function shuffleArray(array) {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+/**
  * Limpa títulos removendo sufixos redundantes de remasters ou coletâneas
  */
 export function sanitizeTrackTitle(title) {
@@ -24,83 +36,148 @@ export function sanitizeTrackTitle(title) {
 }
 
 /**
- * Obtém URL da capa em alta resolução (600x600) a partir da URL padrão de 100x100 da Apple
+ * Converte faixas do Deezer em formato unificado
  */
-export function getHighResArtwork(url) {
-  if (!url) return '';
-  return url.replace('100x100bb', '600x600bb');
+function normalizeDeezerTracks(items) {
+  return items
+    .filter(track => track.preview && track.title && (track.artist?.name || track.artist))
+    .map(track => {
+      const cleanTitle = sanitizeTrackTitle(track.title);
+      const artistName = track.artist?.name || track.artist || 'Artista';
+      return {
+        id: `dz_${track.id}`,
+        title: cleanTitle || track.title,
+        originalTitle: track.title,
+        artist: artistName,
+        album: track.album?.title || 'Single / Álbum',
+        previewUrl: track.preview,
+        artwork: track.album?.cover_xl || track.album?.cover_big || track.album?.cover_medium || '',
+        artworkThumb: track.album?.cover_small || track.album?.cover_medium || '',
+        trackViewUrl: track.link || '',
+        releaseYear: null,
+      };
+    });
 }
 
 /**
- * Embaralha um array utilizando o algoritmo de Fisher-Yates
+ * Busca faixas no Deezer via JSONP no browser (sem restrições de CORS)
+ * O Deezer garante que o áudio de preview comece estritamente em 0:00 (INTRODUÇÃO da música).
  */
-function shuffleArray(array) {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
+function fetchDeezerArtistTracks(artistName) {
+  return new Promise((resolve) => {
+    // Se estiver em ambiente Node/teste, faz fetch direto
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      fetch(`https://api.deezer.com/search?q=${encodeURIComponent(artistName)}&limit=5`)
+        .then(r => r.json())
+        .then(data => resolve(normalizeDeezerTracks(data.data || [])))
+        .catch(() => resolve([]));
+      return;
+    }
+
+    const callbackName = 'deezer_cb_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
+    const script = document.createElement('script');
+
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve([]);
+    }, 8000);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try {
+        window[callbackName] = () => {}; // Mantém no-op para não estourar erro se a resposta chegar atrasada
+      } catch (e) {}
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+    };
+
+    window[callbackName] = (data) => {
+      cleanup();
+      if (data && Array.isArray(data.data)) {
+        resolve(normalizeDeezerTracks(data.data));
+      } else {
+        resolve([]);
+      }
+    };
+
+    script.onerror = () => {
+      cleanup();
+      resolve([]);
+    };
+
+    script.src = `https://api.deezer.com/search?q=${encodeURIComponent(artistName)}&limit=5&output=jsonp&callback=${callbackName}`;
+    document.head.appendChild(script);
+  });
 }
 
 /**
- * Realiza a busca das músicas de maior relevância (limit=4) para um artista
- * através da Apple Search API (sem necessidade de backend ou tokens).
+ * Fallback via Apple Search API caso o Deezer não retorne resultados para um artista específico
  */
-async function fetchArtistTopTracks(artistName) {
-  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(artistName)}&entity=song&limit=4&country=BR`;
+async function fetchAppleArtistTracks(artistName) {
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(artistName)}&entity=song&limit=5&country=BR`;
   
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+
   try {
     const response = await fetch(url, {
-      headers: {
-        'Accept': 'application/json'
-      }
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' }
     });
 
-    if (!response.ok) {
-      console.warn(`[Apple API] Status ${response.status} para ${artistName}`);
-      return [];
-    }
+    clearTimeout(timeoutId);
+
+    if (!response.ok) return [];
 
     const data = await response.json();
-    if (!data.results || !Array.isArray(data.results)) {
-      return [];
-    }
+    if (!data.results || !Array.isArray(data.results)) return [];
 
     return data.results
       .filter(track => track.previewUrl && track.trackName && track.artistName)
       .map(track => {
         const cleanTitle = sanitizeTrackTitle(track.trackName);
         return {
-          id: track.trackId,
+          id: `ap_${track.trackId}`,
           title: cleanTitle || track.trackName,
           originalTitle: track.trackName,
           artist: track.artistName,
           album: track.collectionName || 'Single / Álbum',
           previewUrl: track.previewUrl,
-          artwork: getHighResArtwork(track.artworkUrl100),
+          artwork: track.artworkUrl100 ? track.artworkUrl100.replace('100x100bb', '600x600bb') : '',
           artworkThumb: track.artworkUrl100,
           trackViewUrl: track.trackViewUrl,
           releaseYear: track.releaseDate ? new Date(track.releaseDate).getFullYear() : null,
         };
       });
   } catch (error) {
-    console.warn(`[Apple API] Falha na busca de "${artistName}":`, error);
+    clearTimeout(timeoutId);
     return [];
   }
 }
 
 /**
- * Carrega o catálogo de um gênero disparando requisições paralelas.
- * Deduplica requisições concorrentes e armazena em cache permanente em memória.
+ * Busca faixas de um artista priorizando Deezer (para introdução da música em 0:00)
+ * com fallback para Apple API
+ */
+async function fetchArtistTopTracks(artistName) {
+  const deezerTracks = await fetchDeezerArtistTracks(artistName);
+  if (deezerTracks && deezerTracks.length > 0) {
+    return deezerTracks;
+  }
+  return await fetchAppleArtistTracks(artistName);
+}
+
+/**
+ * Carrega o catálogo do gênero selecionado com deduplicação de requisições e cache permanente
  */
 export async function fetchGenreCatalog(genreId) {
-  // 1. Retorna do cache se já carregado
+  // 1. Retorna do cache em memória se já carregado
   if (catalogCache.has(genreId) && catalogCache.get(genreId).length > 0) {
     return catalogCache.get(genreId);
   }
 
-  // 2. Se já houver uma requisição em andamento para este gênero, reutiliza a Promise
+  // 2. Reutiliza requisição em andamento para o mesmo gênero
   if (pendingRequests.has(genreId)) {
     return pendingRequests.get(genreId);
   }
@@ -111,6 +188,7 @@ export async function fetchGenreCatalog(genreId) {
   }
 
   const loadPromise = (async () => {
+    // Busca todos os artistas consagrados do gênero
     const fetchPromises = genre.artists.map(artist => fetchArtistTopTracks(artist));
     const settledResults = await Promise.allSettled(fetchPromises);
 
@@ -121,7 +199,7 @@ export async function fetchGenreCatalog(genreId) {
       }
     }
 
-    // Desduplica faixas
+    // Desduplica faixas (mesmo artista e título)
     const seenKeys = new Set();
     const uniqueTracks = [];
 
@@ -151,25 +229,6 @@ export async function fetchGenreCatalog(genreId) {
   } finally {
     pendingRequests.delete(genreId);
   }
-}
-
-/**
- * Pré-carrega todos os outros gêneros em segundo plano.
- * Permite alternância instantânea entre gêneros sem espera ou erros.
- */
-export function preloadAllGenres(excludeGenreId) {
-  const genresToPreload = GENRES.filter(g => g.id !== excludeGenreId);
-  
-  // Executa com leve atraso para não competir com a primeira rodada
-  setTimeout(() => {
-    genresToPreload.forEach(genre => {
-      if (!catalogCache.has(genre.id) && !pendingRequests.has(genre.id)) {
-        fetchGenreCatalog(genre.id).catch(err => {
-          console.warn(`[Preload] Aviso ao pré-carregar ${genre.name}:`, err);
-        });
-      }
-    });
-  }, 1000);
 }
 
 /**

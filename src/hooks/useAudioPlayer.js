@@ -6,8 +6,8 @@ export const FINAL_TIME_LIMIT = 30.0;
 
 /**
  * Hook customizado para controle de áudio milimétrico do Songless.
- * Garante ciclo de vida limpo, prevenindo falsos positivos de erro durante
- * transições de faixas e busca de dados.
+ * Garante que cada reprodução comece RIGOROSAMENTE em 0.0s (início da música/trecho)
+ * e pause exatamente no limite liberado pela tentativa.
  */
 export function useAudioPlayer(previewUrl, currentAttemptIndex, isGameOver = false) {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -16,138 +16,35 @@ export function useAudioPlayer(previewUrl, currentAttemptIndex, isGameOver = fal
   const [hasError, setHasError] = useState(false);
 
   const audioRef = useRef(null);
-  const objectUrlRef = useRef(null);
   const animationFrameRef = useRef(null);
-  const abortControllerRef = useRef(null);
 
   // Calcula o tempo máximo liberado para a tentativa atual ou pós-jogo
   const maxAllowedTime = isGameOver 
     ? FINAL_TIME_LIMIT 
     : (ATTEMPT_TIME_LIMITS[currentAttemptIndex] ?? ATTEMPT_TIME_LIMITS[ATTEMPT_TIME_LIMITS.length - 1]);
 
-  // Função auxiliar para desmontar com segurança o elemento de áudio anterior
-  const cleanupCurrentAudio = useCallback(() => {
+  // Limpeza completa do elemento de áudio
+  const cleanupAudio = useCallback(() => {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-
     if (audioRef.current) {
       const audio = audioRef.current;
-      // Remove listeners antes de pausar/resetar para evitar disparar onError indevido
       audio.oncanplay = null;
       audio.oncanplaythrough = null;
       audio.onerror = null;
       audio.onended = null;
+      audio.onpause = null;
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
       audioRef.current = null;
     }
-
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
   }, []);
 
-  // Carregamento do áudio
-  useEffect(() => {
-    cleanupCurrentAudio();
-
-    if (!previewUrl) {
-      setIsPlaying(false);
-      setCurrentTime(0);
-      setIsLoading(false);
-      setHasError(false);
-      return;
-    }
-
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
-    setIsLoading(true);
-    setHasError(false);
-    setIsPlaying(false);
-    setCurrentTime(0);
-
-    let isCancelled = false;
-
-    const setupAudioElement = (srcUrl) => {
-      if (isCancelled) return;
-
-      const audio = new Audio();
-      audio.preload = 'auto';
-
-      audio.oncanplay = () => {
-        if (isCancelled) return;
-        setIsLoading(false);
-        setHasError(false);
-      };
-
-      audio.oncanplaythrough = () => {
-        if (isCancelled) return;
-        setIsLoading(false);
-        setHasError(false);
-      };
-
-      audio.onerror = () => {
-        if (isCancelled) return;
-        // Ignora abort proposital (código 1 - MEDIA_ERR_ABORTED) ou src vazio
-        if (!audio.src || (audio.error && audio.error.code === 1)) {
-          return;
-        }
-        console.warn('[AudioPlayer] Erro ao carregar áudio:', audio.error?.code, srcUrl);
-        setIsLoading(false);
-        setHasError(true);
-        setIsPlaying(false);
-      };
-
-      audio.onended = () => {
-        if (isCancelled) return;
-        setIsPlaying(false);
-        audio.currentTime = 0;
-        setCurrentTime(0);
-      };
-
-      audio.src = srcUrl;
-      audioRef.current = audio;
-    };
-
-    // Baixa o áudio como Blob audio/mp4 para reprodução consistente
-    fetch(previewUrl, { signal: abortController.signal })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error ${response.status}`);
-        }
-        const buffer = await response.arrayBuffer();
-        if (isCancelled) return;
-
-        const blob = new Blob([buffer], { type: 'audio/mp4' });
-        const objUrl = URL.createObjectURL(blob);
-        objectUrlRef.current = objUrl;
-        setupAudioElement(objUrl);
-      })
-      .catch((err) => {
-        if (err.name === 'AbortError' || isCancelled) {
-          return;
-        }
-        // Fallback: tenta URL direta sem disparar erro prematuro
-        setupAudioElement(previewUrl);
-      });
-
-    return () => {
-      isCancelled = true;
-      cleanupCurrentAudio();
-    };
-  }, [previewUrl, cleanupCurrentAudio]);
-
-  // Loop de monitoramento milimétrico com requestAnimationFrame
+  // Monitor de reprodução milimétrico com requestAnimationFrame
   const monitorPlayback = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -155,12 +52,19 @@ export function useAudioPlayer(previewUrl, currentAttemptIndex, isGameOver = fal
     const time = audio.currentTime;
     setCurrentTime(time);
 
-    // Se alcançou ou ultrapassou o limite estipulado pela tentativa
+    // Se atingiu ou ultrapassou o limite estipulado pela tentativa atual
     if (time >= maxAllowedTime) {
       audio.pause();
-      audio.currentTime = 0;
+      try {
+        audio.currentTime = 0;
+      } catch (e) {}
       setCurrentTime(0);
       setIsPlaying(false);
+
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
       return;
     }
 
@@ -169,18 +73,32 @@ export function useAudioPlayer(previewUrl, currentAttemptIndex, isGameOver = fal
     }
   }, [maxAllowedTime]);
 
-  // Função para dar play garantindo início estrito em 0.0s
+  // Função para dar Play garantindo início ESTRITO em 0.0s
   const play = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    audio.currentTime = 0;
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    // 1. Pausa e força rebobinamento para 0.0s
+    audio.pause();
+    try {
+      audio.currentTime = 0;
+    } catch (e) {}
     setCurrentTime(0);
 
     const playPromise = audio.play();
     if (playPromise !== undefined) {
       playPromise
         .then(() => {
+          // 2. Confirma novamente que o áudio está em 0.0s após o início da reprodução no dispositivo móvel
+          try {
+            audio.currentTime = 0;
+          } catch (e) {}
+          setCurrentTime(0);
           setIsPlaying(true);
           animationFrameRef.current = requestAnimationFrame(monitorPlayback);
         })
@@ -193,15 +111,20 @@ export function useAudioPlayer(previewUrl, currentAttemptIndex, isGameOver = fal
     }
   }, [monitorPlayback]);
 
-  // Função para pausar
+  // Função para pausar e sempre rebobinar para 0.0s
   const pause = useCallback(() => {
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
+      try {
+        audio.currentTime = 0;
+      } catch (e) {}
     }
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     }
+    setCurrentTime(0);
     setIsPlaying(false);
   }, []);
 
@@ -214,14 +137,73 @@ export function useAudioPlayer(previewUrl, currentAttemptIndex, isGameOver = fal
     }
   }, [isPlaying, play, pause]);
 
-  // Reseta estado
+  // Para a reprodução e reseta ponteiros
   const stop = useCallback(() => {
     pause();
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-    }
-    setCurrentTime(0);
   }, [pause]);
+
+  // Inicialização e troca de faixa
+  useEffect(() => {
+    cleanupAudio();
+
+    if (!previewUrl) {
+      setIsPlaying(false);
+      setCurrentTime(0);
+      setIsLoading(false);
+      setHasError(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setHasError(false);
+    setIsPlaying(false);
+    setCurrentTime(0);
+
+    let isDisposed = false;
+    const audio = new Audio();
+    audio.preload = 'auto';
+
+    audio.oncanplay = () => {
+      if (isDisposed) return;
+      setIsLoading(false);
+      setHasError(false);
+    };
+
+    audio.oncanplaythrough = () => {
+      if (isDisposed) return;
+      setIsLoading(false);
+      setHasError(false);
+    };
+
+    audio.onerror = () => {
+      if (isDisposed) return;
+      if (!audio.src || (audio.error && audio.error.code === 1)) {
+        return;
+      }
+      console.warn('[AudioPlayer] Erro no áudio:', audio.error?.code, previewUrl);
+      setIsLoading(false);
+      setHasError(true);
+      setIsPlaying(false);
+    };
+
+    audio.onended = () => {
+      if (isDisposed) return;
+      setIsPlaying(false);
+      try {
+        audio.currentTime = 0;
+      } catch (e) {}
+      setCurrentTime(0);
+    };
+
+    // Força áudio direto para compatibilidade nativa com Safari/iOS e Chrome Android
+    audio.src = previewUrl;
+    audioRef.current = audio;
+
+    return () => {
+      isDisposed = true;
+      cleanupAudio();
+    };
+  }, [previewUrl, cleanupAudio]);
 
   return {
     isPlaying,

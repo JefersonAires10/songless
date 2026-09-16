@@ -8,7 +8,7 @@ import { ResultModal } from './components/ResultModal';
 import { StatsModal } from './components/StatsModal';
 import { InfoModal } from './components/InfoModal';
 import { GENRES, DEFAULT_GENRE_ID } from './config/genres';
-import { fetchGenreCatalog, getRandomTrackFromCatalog, preloadAllGenres } from './services/musicService';
+import { fetchGenreCatalog, getRandomTrackFromCatalog } from './services/musicService';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
 import { useGameStats } from './hooks/useGameStats';
 
@@ -88,13 +88,10 @@ export default function App() {
 
       setCatalog(tracks);
       startNewRound(tracks);
-
-      // Pré-carrega os outros gêneros em background para troca instantânea
-      preloadAllGenres(genreId);
     } catch (err) {
       if (requestId === currentRequestIdRef.current) {
         console.error('[App] Erro ao carregar gênero:', err);
-        setCatalogError('Não foi possível carregar as músicas da Apple API. Verifique sua conexão.');
+        setCatalogError('Não foi possível carregar as músicas. Verifique sua conexão.');
       }
     } finally {
       if (requestId === currentRequestIdRef.current) {
@@ -238,10 +235,6 @@ export default function App() {
             {/* Informações da Categoria Ativa */}
             <div className="text-center px-4 mb-2">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1e1e1e] border border-[#333] text-[11px] font-semibold text-spotify-subdued">
-                <span
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: activeGenre.accentColor }}
-                />
                 {activeGenre.name} • {catalog.length} clássicos disponíveis
               </span>
             </div>

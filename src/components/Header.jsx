@@ -35,9 +35,6 @@ export function Header({
         <div>
           <h1 className="text-xl font-extrabold tracking-tight text-white flex items-center gap-1.5 leading-none">
             Songless
-            <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-spotify-card text-spotify-green border border-spotify-green/30">
-              Clássicos
-            </span>
           </h1>
           <p className="text-xs text-spotify-subdued leading-tight mt-0.5 hidden sm:block">
             Adivinhe o clássico da música
@@ -54,10 +51,6 @@ export function Header({
             className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-spotify-card hover:bg-spotify-card-hover border border-[#3e3e3e] transition-all text-xs font-semibold text-white focus:outline-none focus:ring-2 focus:ring-spotify-green"
             title="Trocar Gênero Musical"
           >
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ backgroundColor: activeGenre.accentColor || '#1DB954' }}
-            />
             <span className="max-w-[110px] sm:max-w-none truncate">
               {activeGenre.shortName || activeGenre.name}
             </span>
@@ -92,17 +85,10 @@ export function Header({
                   >
                     <div>
                       <div className="flex items-center gap-2">
-                        <span
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: genre.accentColor }}
-                        />
                         <span className={`text-sm font-semibold ${isSelected ? 'text-spotify-green' : 'text-white'}`}>
                           {genre.name}
                         </span>
                       </div>
-                      <p className="text-[11px] text-spotify-subdued mt-0.5 pl-4 line-clamp-1">
-                        {genre.tagline}
-                      </p>
                     </div>
                     {isSelected && (
                       <Check className="w-4 h-4 text-spotify-green shrink-0 mt-0.5" />
