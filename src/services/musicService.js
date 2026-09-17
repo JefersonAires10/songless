@@ -1,8 +1,27 @@
 import { GENRES } from '../config/genres.js';
 
-// Cache em memória para catálogo de músicas por gênero
+// Cache em memória para catálogo de músicas por gênero com TTL (10 minutos)
+const CACHE_TTL_MS = 10 * 60 * 1000;
 const catalogCache = new Map();
 const pendingRequests = new Map();
+
+/**
+ * Verifica se uma URL de áudio (especialmente do Deezer com token Akamai) está expirada ou prestes a expirar.
+ * URLs do Deezer contêm hdnea=exp={timestamp}, com validade padrão de 15 minutos (900s).
+ */
+export function isPreviewUrlExpired(url) {
+  if (!url) return true;
+  try {
+    const match = url.match(/exp=(\d+)/);
+    if (match && match[1]) {
+      const expTimestamp = parseInt(match[1], 10);
+      const now = Math.floor(Date.now() / 1000);
+      // Considera expirado se faltar menos de 60 segundos ou se já venceu
+      return now >= (expTimestamp - 60);
+    }
+  } catch (e) {}
+  return false;
+}
 
 /**
  * Embaralha array com Fisher-Yates
@@ -46,6 +65,7 @@ function normalizeDeezerTracks(items) {
       const artistName = track.artist?.name || track.artist || 'Artista';
       return {
         id: `dz_${track.id}`,
+        deezerId: String(track.id),
         title: cleanTitle || track.title,
         originalTitle: track.title,
         artist: artistName,
@@ -172,9 +192,10 @@ async function fetchArtistTopTracks(artistName) {
  * Carrega o catálogo do gênero selecionado com deduplicação de requisições e cache permanente
  */
 export async function fetchGenreCatalog(genreId) {
-  // 1. Retorna do cache em memória se já carregado
-  if (catalogCache.has(genreId) && catalogCache.get(genreId).length > 0) {
-    return catalogCache.get(genreId);
+  // 1. Retorna do cache em memória se já carregado e válido (menos de 10 minutos)
+  const cached = catalogCache.get(genreId);
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS) && cached.catalog?.length > 0) {
+    return cached.catalog;
   }
 
   // 2. Reutiliza requisição em andamento para o mesmo gênero
@@ -213,9 +234,9 @@ export async function fetchGenreCatalog(genreId) {
 
     const finalizedCatalog = shuffleArray(uniqueTracks);
 
-    // Salva no cache
+    // Salva no cache com timestamp
     if (finalizedCatalog.length > 0) {
-      catalogCache.set(genreId, finalizedCatalog);
+      catalogCache.set(genreId, { catalog: finalizedCatalog, timestamp: Date.now() });
     }
 
     return finalizedCatalog;
@@ -259,3 +280,188 @@ export function filterTracksForSearch(catalog, query) {
     })
     .slice(0, 8);
 }
+
+/**
+ * Busca preview e dados de uma faixa específica via Deezer (JSONP) ou Apple Search API
+ */
+export async function searchTrackPreviewFallback(trackTitle, artistName) {
+  const query = `${artistName} ${trackTitle}`.trim();
+  if (!query) return null;
+
+  // 1. Tenta Deezer via JSONP
+  const deezerResult = await new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      fetch(`https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=1`)
+        .then(r => r.json())
+        .then(data => {
+          const t = data.data?.[0];
+          resolve(t?.preview ? {
+            previewUrl: t.preview,
+            artwork: t.album?.cover_xl || t.album?.cover_big || t.album?.cover_medium || '',
+            artworkThumb: t.album?.cover_small || '',
+            trackViewUrl: t.link || '',
+          } : null);
+        })
+        .catch(() => resolve(null));
+      return;
+    }
+
+    const callbackName = 'dz_track_cb_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
+    const script = document.createElement('script');
+    const timer = setTimeout(() => { cleanup(); resolve(null); }, 4000);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try { window[callbackName] = () => {}; } catch (e) {}
+      if (script.parentNode) script.parentNode.removeChild(script);
+    };
+
+    window[callbackName] = (data) => {
+      cleanup();
+      const t = data?.data?.[0];
+      if (t?.preview) {
+        resolve({
+          previewUrl: t.preview,
+          artwork: t.album?.cover_xl || t.album?.cover_big || t.album?.cover_medium || '',
+          artworkThumb: t.album?.cover_small || '',
+          trackViewUrl: t.link || '',
+        });
+      } else {
+        resolve(null);
+      }
+    };
+
+    script.onerror = () => { cleanup(); resolve(null); };
+    script.src = `https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=1&output=jsonp&callback=${callbackName}`;
+    document.head.appendChild(script);
+  });
+
+  if (deezerResult) return deezerResult;
+
+  // 2. Fallback para Apple Search
+  try {
+    const appleUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1&country=BR`;
+    const res = await fetch(appleUrl);
+    const data = await res.json();
+    const item = data?.results?.[0];
+    if (item?.previewUrl) {
+      return {
+        previewUrl: item.previewUrl,
+        artwork: item.artworkUrl100 ? item.artworkUrl100.replace('100x100bb', '600x600bb') : '',
+        artworkThumb: item.artworkUrl100 || '',
+        trackViewUrl: item.trackViewUrl || '',
+      };
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+/**
+ * Busca uma faixa específica por ID no Deezer para obter um novo token de preview válido
+ */
+export function fetchDeezerTrackById(trackId) {
+  const cleanId = String(trackId).replace(/^dz_art_|^dz_|^pl_dz_/, '');
+  if (!cleanId || isNaN(Number(cleanId))) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      fetch(`https://api.deezer.com/track/${cleanId}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.preview) {
+            resolve({
+              previewUrl: data.preview,
+              deezerId: String(data.id),
+              artwork: data.album?.cover_xl || data.album?.cover_big || data.album?.cover_medium || '',
+              artworkThumb: data.album?.cover_small || '',
+            });
+          } else {
+            resolve(null);
+          }
+        })
+        .catch(() => resolve(null));
+      return;
+    }
+
+    const callbackName = 'dz_track_id_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
+    const script = document.createElement('script');
+    const timer = setTimeout(() => { cleanup(); resolve(null); }, 5000);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try { window[callbackName] = () => {}; } catch (e) {}
+      if (script.parentNode) script.parentNode.removeChild(script);
+    };
+
+    window[callbackName] = (data) => {
+      cleanup();
+      if (data && data.preview) {
+        resolve({
+          previewUrl: data.preview,
+          deezerId: String(data.id),
+          artwork: data.album?.cover_xl || data.album?.cover_big || data.album?.cover_medium || '',
+          artworkThumb: data.album?.cover_small || '',
+        });
+      } else {
+        resolve(null);
+      }
+    };
+
+    script.onerror = () => { cleanup(); resolve(null); };
+    script.src = `https://api.deezer.com/track/${cleanId}?output=jsonp&callback=${callbackName}`;
+    document.head.appendChild(script);
+  });
+}
+
+/**
+ * Garante uma URL de áudio válida e renovada para a música (resolve URLs expiradas do Deezer)
+ */
+export async function refreshTrackPreview(track) {
+  if (!track) return null;
+
+  // Se a URL ainda for válida e não estiver expirando, mantém
+  if (track.previewUrl && !isPreviewUrlExpired(track.previewUrl)) {
+    return track.previewUrl;
+  }
+
+  console.log(`[MusicService] Renovando áudio de "${track.title}" (${track.artist})...`);
+
+  // 1. Tenta renovar pelo Deezer ID direto
+  const deezerId = track.deezerId || (track.id ? String(track.id).replace(/^dz_art_|^dz_|^pl_dz_/, '') : null);
+  if (deezerId && !isNaN(Number(deezerId))) {
+    try {
+      const refreshed = await fetchDeezerTrackById(deezerId);
+      if (refreshed?.previewUrl) {
+        track.previewUrl = refreshed.previewUrl;
+        track.deezerId = deezerId;
+        if (refreshed.artwork && !track.artwork) track.artwork = refreshed.artwork;
+        if (refreshed.artworkThumb && !track.artworkThumb) track.artworkThumb = refreshed.artworkThumb;
+        console.log(`[MusicService] Áudio renovado com sucesso via Deezer ID: ${deezerId}`);
+        return refreshed.previewUrl;
+      }
+    } catch (e) {
+      console.warn('[MusicService] Falha ao renovar via Deezer ID:', e);
+    }
+  }
+
+  // 2. Fallback: busca online por título e artista
+  try {
+    const queryArtist = track.artist || '';
+    const queryTitle = track.originalTitle || track.title || '';
+    const fallback = await searchTrackPreviewFallback(queryTitle, queryArtist);
+    if (fallback?.previewUrl) {
+      track.previewUrl = fallback.previewUrl;
+      if (fallback.artwork && !track.artwork) track.artwork = fallback.artwork;
+      if (fallback.artworkThumb && !track.artworkThumb) track.artworkThumb = fallback.artworkThumb;
+      console.log(`[MusicService] Áudio renovado com sucesso via busca online: "${queryTitle}"`);
+      return fallback.previewUrl;
+    }
+  } catch (e) {
+    console.warn('[MusicService] Falha ao renovar via busca online:', e);
+  }
+
+  return track.previewUrl || null;
+}
+
+

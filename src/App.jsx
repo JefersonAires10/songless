@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Music, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Music, RefreshCw, AlertTriangle, Mic2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { GameBoard } from './components/GameBoard';
 import { PlayerBar } from './components/PlayerBar';
@@ -7,16 +7,23 @@ import { SearchInput } from './components/SearchInput';
 import { ResultModal } from './components/ResultModal';
 import { StatsModal } from './components/StatsModal';
 import { InfoModal } from './components/InfoModal';
+import { ImportPlaylistModal } from './components/ImportPlaylistModal';
+import { ArtistSelectModal } from './components/ArtistSelectModal';
 import { GENRES, DEFAULT_GENRE_ID } from './config/genres';
-import { fetchGenreCatalog, getRandomTrackFromCatalog } from './services/musicService';
+import { fetchGenreCatalog, getRandomTrackFromCatalog, isPreviewUrlExpired, refreshTrackPreview } from './services/musicService';
+import { getSavedPlaylists, deleteCustomPlaylist } from './services/playlistService';
+import { fetchArtistCatalog } from './services/artistService';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
 import { useGameStats } from './hooks/useGameStats';
 
 export default function App() {
-  // Gênero selecionado
+  // Gênero selecionado, Playlist Customizada ativa e Modo Artista ativo
   const [activeGenreId, setActiveGenreId] = useState(DEFAULT_GENRE_ID);
+  const [activeCustomPlaylist, setActiveCustomPlaylist] = useState(null);
+  const [activeArtist, setActiveArtist] = useState(null);
+  const [customPlaylists, setCustomPlaylists] = useState(() => getSavedPlaylists());
   
-  // Catálogo de faixas do gênero ativo
+  // Catálogo de faixas do gênero, playlist ou artista ativo
   const [catalog, setCatalog] = useState([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
   const [catalogError, setCatalogError] = useState(null);
@@ -36,6 +43,8 @@ export default function App() {
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
   const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isArtistModalOpen, setIsArtistModalOpen] = useState(false);
 
   // Estatísticas persistentes
   const { stats, winRate, recordResult, resetStats } = useGameStats();
@@ -43,11 +52,21 @@ export default function App() {
   const isGameOver = gameStatus === 'won' || gameStatus === 'lost';
   const currentAttemptIndex = attempts.length;
 
-  // Hook de controle de áudio milimétrico
+  // Atualiza metadados ou URL de áudio quando o token for renovado em background
+  const handleTrackUpdated = useCallback((updatedTrack) => {
+    if (!updatedTrack) return;
+    setTargetTrack(prev => (prev && prev.id === updatedTrack.id ? { ...prev, ...updatedTrack } : prev));
+    setCatalog(prevCatalog =>
+      prevCatalog.map(t => (t.id === updatedTrack.id ? { ...t, ...updatedTrack } : t))
+    );
+  }, []);
+
+  // Hook de controle de áudio milimétrico com autorrecuperação
   const audioPlayer = useAudioPlayer(
-    targetTrack?.previewUrl,
+    targetTrack,
     currentAttemptIndex,
-    isGameOver
+    isGameOver,
+    handleTrackUpdated
   );
 
   // Inicia uma nova rodada com uma faixa aleatória do catálogo
@@ -59,6 +78,19 @@ export default function App() {
 
     if (selected) {
       playedTrackIdsRef.current.add(selected.id);
+
+      // Se a URL de áudio do Deezer estiver expirada (> 15min) ou perto disso, renova proativamente
+      if (isPreviewUrlExpired(selected.previewUrl)) {
+        refreshTrackPreview(selected).then((freshUrl) => {
+          if (freshUrl) {
+            setTargetTrack(prev => (prev && prev.id === selected.id ? { ...prev, previewUrl: freshUrl } : prev));
+            setCatalog(prevCatalog =>
+              prevCatalog.map(t => (t.id === selected.id ? { ...t, previewUrl: freshUrl } : t))
+            );
+          }
+        });
+      }
+
       setTargetTrack(selected);
       setAttempts([]);
       setGameStatus('playing');
@@ -105,11 +137,13 @@ export default function App() {
     loadCatalogForGenre(activeGenreId);
   }, [activeGenreId, loadCatalogForGenre]);
 
-  // Alterna o gênero com feedback e reset imediato
+  // Alterna o gênero padrão com feedback e reset imediato
   const handleSelectGenre = (newGenreId) => {
-    if (newGenreId === activeGenreId) return;
+    if (newGenreId === activeGenreId && !activeCustomPlaylist && !activeArtist) return;
     
-    // Reseta estados imediatamente para não exibir erros ou faixas antigas
+    audioPlayer.stop();
+    setActiveCustomPlaylist(null);
+    setActiveArtist(null);
     setCatalogError(null);
     setIsLoadingCatalog(true);
     setTargetTrack(null);
@@ -118,6 +152,79 @@ export default function App() {
     playedTrackIdsRef.current.clear();
 
     setActiveGenreId(newGenreId);
+    loadCatalogForGenre(newGenreId);
+  };
+
+  // Seleciona uma playlist personalizada importada
+  const handleSelectCustomPlaylist = (playlist) => {
+    if (!playlist || !playlist.tracks || playlist.tracks.length === 0) return;
+
+    audioPlayer.stop();
+    setActiveArtist(null);
+    setCatalogError(null);
+    setIsLoadingCatalog(false);
+    setTargetTrack(null);
+    setAttempts([]);
+    setGameStatus('playing');
+    playedTrackIdsRef.current.clear();
+
+    setActiveCustomPlaylist(playlist);
+    setCatalog(playlist.tracks);
+    startNewRound(playlist.tracks);
+  };
+
+  // Seleciona um artista específico (Modo Artista)
+  const handleSelectArtist = async (artist) => {
+    const requestId = ++currentRequestIdRef.current;
+
+    audioPlayer.stop();
+    setActiveCustomPlaylist(null);
+    setActiveArtist({ name: artist.name, picture: artist.picture });
+    setCatalogError(null);
+    setIsLoadingCatalog(true);
+    setTargetTrack(null);
+    setAttempts([]);
+    setGameStatus('playing');
+    playedTrackIdsRef.current.clear();
+
+    try {
+      const artistData = await fetchArtistCatalog(artist.name, artist.id, artist.picture);
+
+      if (requestId !== currentRequestIdRef.current) return;
+
+      if (!artistData || !artistData.tracks || artistData.tracks.length === 0) {
+        throw new Error(`Não encontramos músicas com áudio disponível para "${artist.name}".`);
+      }
+
+      setActiveArtist(artistData);
+      setCatalog(artistData.tracks);
+      startNewRound(artistData.tracks);
+    } catch (err) {
+      if (requestId === currentRequestIdRef.current) {
+        console.error('[App] Erro ao carregar artista:', err);
+        setCatalogError(err.message || `Não foi possível carregar as músicas de ${artist.name}.`);
+      }
+    } finally {
+      if (requestId === currentRequestIdRef.current) {
+        setIsLoadingCatalog(false);
+      }
+    }
+  };
+
+  // Exclui playlist personalizada salva
+  const handleDeleteCustomPlaylist = (playlistId) => {
+    const updated = deleteCustomPlaylist(playlistId);
+    setCustomPlaylists(updated);
+
+    if (activeCustomPlaylist?.id === playlistId) {
+      handleSelectGenre(DEFAULT_GENRE_ID);
+    }
+  };
+
+  // Callback de sucesso ao importar uma nova playlist
+  const handleImportSuccess = (newPlaylist) => {
+    setCustomPlaylists(getSavedPlaylists());
+    handleSelectCustomPlaylist(newPlaylist);
   };
 
   // Trata submissão de palpite
@@ -197,10 +304,16 @@ export default function App() {
       {/* Cabeçalho */}
       <Header
         activeGenreId={activeGenreId}
+        activeCustomPlaylist={activeCustomPlaylist}
+        activeArtist={activeArtist}
+        customPlaylists={customPlaylists}
         onSelectGenre={handleSelectGenre}
+        onSelectCustomPlaylist={handleSelectCustomPlaylist}
+        onDeleteCustomPlaylist={handleDeleteCustomPlaylist}
+        onOpenImportModal={() => setIsImportModalOpen(true)}
+        onOpenArtistModal={() => setIsArtistModalOpen(true)}
         onOpenStats={() => setIsStatsModalOpen(true)}
         onOpenInfo={() => setIsInfoModalOpen(true)}
-        totalInGenre={catalog.length}
       />
 
       {/* Conteúdo Central com espaçamento inferior amplo para o select não colar na borda */}
@@ -212,10 +325,16 @@ export default function App() {
               <Music className="w-6 h-6 text-spotify-green absolute inset-0 m-auto" />
             </div>
             <h3 className="text-lg font-bold text-white">
-              Sintonizando clássicos de {activeGenre.name}...
+              {activeArtist
+                ? `Sintonizando as melhores músicas de ${activeArtist.name}...`
+                : activeCustomPlaylist
+                ? `Carregando faixas da playlist ${activeCustomPlaylist.name}...`
+                : `Sintonizando clássicos de ${activeGenre.name}...`}
             </h3>
             <p className="text-xs text-spotify-subdued mt-1 max-w-xs">
-              Buscando as faixas mais aclamadas dos mestres na Apple Search API.
+              {activeArtist
+                ? 'Buscando os maiores sucessos e áudios originais do artista.'
+                : 'Buscando as faixas mais aclamadas dos mestres na Apple Search API.'}
             </p>
           </div>
         ) : catalogError ? (
@@ -224,7 +343,15 @@ export default function App() {
             <h3 className="text-lg font-bold text-white mb-1">Falha na conexão</h3>
             <p className="text-xs text-spotify-subdued mb-4">{catalogError}</p>
             <button
-              onClick={() => loadCatalogForGenre(activeGenreId)}
+              onClick={() => {
+                if (activeArtist) {
+                  handleSelectArtist(activeArtist);
+                } else if (activeCustomPlaylist) {
+                  handleSelectCustomPlaylist(activeCustomPlaylist);
+                } else {
+                  loadCatalogForGenre(activeGenreId);
+                }
+              }}
               className="px-5 py-2.5 rounded-full bg-spotify-green hover:bg-spotify-green-hover text-black font-bold text-xs uppercase tracking-wider transition-all"
             >
               Tentar Novamente
@@ -232,11 +359,28 @@ export default function App() {
           </div>
         ) : (
           <>
-            {/* Informações da Categoria Ativa */}
+            {/* Informações da Categoria, Playlist ou Artista Ativo */}
             <div className="text-center px-4 mb-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1e1e1e] border border-[#333] text-[11px] font-semibold text-spotify-subdued">
-                {activeGenre.name} • {catalog.length} clássicos disponíveis
-              </span>
+              {activeArtist ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-spotify-green/10 border border-spotify-green/40 text-[11px] font-semibold text-spotify-green shadow-sm max-w-full">
+                  <Mic2 className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Modo Artista: {activeArtist.name}</span>
+                  <span className="text-neutral-500 shrink-0">•</span>
+                  <span className="shrink-0">{catalog.length} faixas</span>
+                </span>
+              ) : activeCustomPlaylist ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-spotify-green/10 border border-spotify-green/40 text-[11px] font-semibold text-spotify-green shadow-sm max-w-full">
+                  <span className="truncate">Playlist: {activeCustomPlaylist.name}</span>
+                  <span className="text-neutral-500 shrink-0">•</span>
+                  <span className="shrink-0">{catalog.length} faixas</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1e1e1e] border border-[#333] text-[11px] font-semibold text-spotify-subdued max-w-full">
+                  <span className="truncate">{activeGenre.name}</span>
+                  <span className="text-neutral-500 shrink-0">•</span>
+                  <span className="shrink-0">{catalog.length} clássicos</span>
+                </span>
+              )}
             </div>
 
             {/* Tabuleiro com as 6 tentativas */}
@@ -294,6 +438,19 @@ export default function App() {
       </footer>
 
       {/* Modais */}
+      <ArtistSelectModal
+        isOpen={isArtistModalOpen}
+        onClose={() => setIsArtistModalOpen(false)}
+        onSelectArtist={handleSelectArtist}
+        activeArtistName={activeArtist?.name}
+      />
+
+      <ImportPlaylistModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImportSuccess={handleImportSuccess}
+      />
+
       <ResultModal
         isOpen={isResultModalOpen}
         onClose={() => setIsResultModalOpen(false)}

@@ -159,9 +159,21 @@ export function ResultModal({
                 target="_blank"
                 rel="noreferrer"
                 className="text-xs text-spotify-subdued hover:text-white flex items-center gap-1 transition-colors"
-                title="Abrir no Apple Music"
+                title={
+                  targetTrack.provider === 'spotify' || targetTrack.trackViewUrl.includes('spotify.com')
+                    ? 'Abrir no Spotify'
+                    : targetTrack.provider === 'deezer' || targetTrack.trackViewUrl.includes('deezer.com')
+                    ? 'Abrir no Deezer'
+                    : 'Abrir no Apple Music'
+                }
               >
-                <span>Apple Music</span>
+                <span>
+                  {targetTrack.provider === 'spotify' || targetTrack.trackViewUrl.includes('spotify.com')
+                    ? 'Spotify'
+                    : targetTrack.provider === 'deezer' || targetTrack.trackViewUrl.includes('deezer.com')
+                    ? 'Deezer'
+                    : 'Apple Music'}
+                </span>
                 <ExternalLink className="w-3 h-3" />
               </a>
             )}

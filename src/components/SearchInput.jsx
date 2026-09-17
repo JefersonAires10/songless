@@ -126,7 +126,7 @@ export function SearchInput({
               }}
               disabled={disabled}
               placeholder="Conhece a música? Digite o artista ou título..."
-              className="w-full h-12 pl-10 pr-24 rounded-lg bg-spotify-card border border-[#3e3e3e] focus:border-spotify-green focus:ring-1 focus:ring-spotify-green text-sm text-white placeholder-spotify-subdued transition-all outline-none"
+              className="w-full h-12 pl-10 pr-24 rounded-lg bg-spotify-card border border-[#3e3e3e] focus:border-spotify-green focus:ring-1 focus:ring-spotify-green text-base sm:text-sm text-white placeholder-spotify-subdued transition-all outline-none"
             />
 
             {/* Botão Enviar */}
@@ -146,7 +146,7 @@ export function SearchInput({
 
           {/* Dropdown Flutuante de Autocomplete POSICIONADO ESTRITAMENTE ABAIXO DO INPUT */}
           {isOpen && suggestions.length > 0 && (
-            <div className="absolute left-0 right-0 top-full mt-2 max-h-56 sm:max-h-60 overflow-y-auto rounded-xl bg-[#202020] border border-[#3e3e3e] shadow-[0_20px_40px_rgba(0,0,0,0.95)] z-50 py-1.5">
+            <div className="absolute left-0 right-0 top-full mt-2 max-h-52 sm:max-h-60 overflow-y-auto rounded-xl bg-[#202020] border border-[#3e3e3e] shadow-[0_20px_40px_rgba(0,0,0,0.95)] z-50 py-1.5">
               <div className="px-3 py-1.5 text-[10px] uppercase font-bold tracking-wider text-spotify-subdued border-b border-[#2d2d2d] sticky top-0 bg-[#202020]/95 backdrop-blur z-10">
                 Clássicos Sugeridos
               </div>
