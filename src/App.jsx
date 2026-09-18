@@ -10,7 +10,7 @@ import { InfoModal } from './components/InfoModal';
 import { ImportPlaylistModal } from './components/ImportPlaylistModal';
 import { ArtistSelectModal } from './components/ArtistSelectModal';
 import { GENRES, DEFAULT_GENRE_ID } from './config/genres';
-import { fetchGenreCatalog, getRandomTrackFromCatalog, isPreviewUrlExpired, refreshTrackPreview } from './services/musicService';
+import { fetchGenreCatalog, getRandomTrackFromCatalog, isPreviewUrlExpired, refreshTrackPreview, normalizeText } from './services/musicService';
 import { getSavedPlaylists, deleteCustomPlaylist } from './services/playlistService';
 import { fetchArtistCatalog } from './services/artistService';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
@@ -235,8 +235,8 @@ export default function App() {
 
     const isMatch =
       guessedTrack.id === targetTrack.id ||
-      (guessedTrack.title.toLowerCase().trim() === targetTrack.title.toLowerCase().trim() &&
-        guessedTrack.artist.toLowerCase().trim() === targetTrack.artist.toLowerCase().trim());
+      (normalizeText(guessedTrack.title) === normalizeText(targetTrack.title) &&
+        normalizeText(guessedTrack.artist) === normalizeText(targetTrack.artist));
 
     if (isMatch) {
       const updatedAttempts = [

@@ -23,6 +23,8 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
 
   const audioRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const stopTimeoutRef = useRef(null);
+  const playbackStartTimeRef = useRef(null);
   const isRefreshingRef = useRef(false);
 
   // Sincroniza activeUrl quando a faixa ou URL de entrada mudar
@@ -64,8 +66,35 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
     ? FINAL_TIME_LIMIT 
     : (ATTEMPT_TIME_LIMITS[currentAttemptIndex] ?? ATTEMPT_TIME_LIMITS[ATTEMPT_TIME_LIMITS.length - 1]);
 
+  // Função para parar a reprodução do trecho e rebobinar para 0.0s
+  const stopPlayback = useCallback(() => {
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      try {
+        audio.currentTime = 0;
+      } catch (e) {}
+    }
+
+    setCurrentTime(0);
+    setIsPlaying(false);
+  }, []);
+
   // Limpeza completa do elemento de áudio
   const cleanupAudio = useCallback(() => {
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -85,34 +114,38 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
     }
   }, []);
 
-  // Monitor de reprodução milimétrico com requestAnimationFrame
+  // Monitor de reprodução milimétrico com requestAnimationFrame e proteção anti-stale seek
   const monitorPlayback = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const time = audio.currentTime;
-    setCurrentTime(time);
+    const elapsedWall = playbackStartTimeRef.current 
+      ? (performance.now() - playbackStartTimeRef.current) / 1000 
+      : 0;
+    const audioTime = audio.currentTime || 0;
 
-    // Se atingiu ou ultrapassou o limite estipulado pela tentativa atual
-    if (time >= maxAllowedTime) {
-      audio.pause();
-      try {
-        audio.currentTime = 0;
-      } catch (e) {}
-      setCurrentTime(0);
-      setIsPlaying(false);
+    // No mobile (Safari / Chrome), se a reprodução acabou de iniciar (< 60ms),
+    // audio.currentTime pode retornar resíduo stale da reprodução anterior (ex: 0.10s).
+    // Só validamos audioTime quando houver transcorrido tempo mínimo plausível.
+    const isStaleAudioTime = elapsedWall < 0.06 && audioTime >= maxAllowedTime;
 
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+    const displayTime = isStaleAudioTime 
+      ? Math.min(maxAllowedTime, elapsedWall) 
+      : Math.min(maxAllowedTime, Math.max(audioTime, elapsedWall));
+    setCurrentTime(displayTime);
+
+    // Se atingiu o limite de tempo estipulado
+    const reachedLimit = elapsedWall >= maxAllowedTime || (!isStaleAudioTime && audioTime >= maxAllowedTime);
+
+    if (reachedLimit) {
+      stopPlayback();
       return;
     }
 
     if (!audio.paused) {
       animationFrameRef.current = requestAnimationFrame(monitorPlayback);
     }
-  }, [maxAllowedTime]);
+  }, [maxAllowedTime, stopPlayback]);
 
   // Tenta renovar o link de áudio e recarregar o player em caso de falha ou expiração
   const attemptRenewAudio = useCallback(async () => {
@@ -143,6 +176,11 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
     let audio = audioRef.current;
     if (!audio) return;
 
+    // Cancela qualquer execução pendente
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
+    }
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
@@ -168,21 +206,43 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       }
     }
 
-    // 1. Pausa e força rebobinamento para 0.0s
+    // 1. Pausa e força rebobinamento para 0.0s ANTES de iniciar a reprodução
     audio.pause();
     try {
       audio.currentTime = 0;
     } catch (e) {}
     setCurrentTime(0);
 
+    // Se o áudio estiver em processo de busca/seeking ou se currentTime ainda não estiver zerado,
+    // aguarda brevemente pelo evento 'seeked' para garantir que o buffer começa rigorosamente em 0.0s
+    if (audio.seeking || audio.currentTime > 0.02) {
+      await new Promise(resolve => {
+        const onSeeked = () => {
+          audio.removeEventListener('seeked', onSeeked);
+          resolve();
+        };
+        audio.addEventListener('seeked', onSeeked, { once: true });
+        try {
+          audio.currentTime = 0;
+        } catch (e) {}
+        setTimeout(resolve, 70);
+      });
+    }
+
     try {
       await audio.play();
-      try {
-        audio.currentTime = 0;
-      } catch (e) {}
-      setCurrentTime(0);
+
+      // Registra timestamp real do início para cálculo milimétrico no mobile
+      playbackStartTimeRef.current = performance.now();
       setIsPlaying(true);
       setHasError(false);
+
+      // Timeout exato de segurança contra throttling de requestAnimationFrame em mobile/tablet
+      const timeoutMs = Math.round(maxAllowedTime * 1000);
+      stopTimeoutRef.current = setTimeout(() => {
+        stopPlayback();
+      }, timeoutMs);
+
       animationFrameRef.current = requestAnimationFrame(monitorPlayback);
     } catch (err) {
       if (err.name !== 'AbortError') {
@@ -196,28 +256,18 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       }
       setIsPlaying(false);
     }
-  }, [hasError, attemptRenewAudio, monitorPlayback]);
+  }, [hasError, attemptRenewAudio, maxAllowedTime, monitorPlayback, stopPlayback]);
 
   // Função para pausar e sempre rebobinar para 0.0s
   const pause = useCallback(() => {
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      try {
-        audio.currentTime = 0;
-      } catch (e) {}
-    }
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-    setCurrentTime(0);
-    setIsPlaying(false);
-  }, []);
+    stopPlayback();
+  }, [stopPlayback]);
 
-  // Alterna entre play e pause
+  // Alterna entre play e pause com verificação do elemento nativo
   const togglePlay = useCallback(() => {
-    if (isPlaying) {
+    const audio = audioRef.current;
+    const isCurrentlyPlaying = isPlaying || (audio && !audio.paused);
+    if (isCurrentlyPlaying) {
       pause();
     } else {
       play();
@@ -226,8 +276,8 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
 
   // Para a reprodução e reseta ponteiros
   const stop = useCallback(() => {
-    pause();
-  }, [pause]);
+    stopPlayback();
+  }, [stopPlayback]);
 
   // Inicialização e troca de faixa
   useEffect(() => {
@@ -262,6 +312,20 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       setHasError(false);
     };
 
+    audio.onpause = () => {
+      if (isDisposed) return;
+      // Garante sincronização imediata do estado se o browser/OS pausar o áudio
+      setIsPlaying(false);
+      if (stopTimeoutRef.current) {
+        clearTimeout(stopTimeoutRef.current);
+        stopTimeoutRef.current = null;
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+
     audio.onerror = async () => {
       if (isDisposed) return;
       if (!audio.src || (audio.error && audio.error.code === 1)) {
@@ -285,11 +349,7 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
 
     audio.onended = () => {
       if (isDisposed) return;
-      setIsPlaying(false);
-      try {
-        audio.currentTime = 0;
-      } catch (e) {}
-      setCurrentTime(0);
+      stopPlayback();
     };
 
     audio.src = activeUrl;
@@ -299,7 +359,7 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       isDisposed = true;
       cleanupAudio();
     };
-  }, [activeUrl, cleanupAudio, currentTrack, attemptRenewAudio]);
+  }, [activeUrl, cleanupAudio, currentTrack, attemptRenewAudio, stopPlayback]);
 
   return {
     isPlaying,

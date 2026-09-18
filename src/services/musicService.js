@@ -55,6 +55,22 @@ export function sanitizeTrackTitle(title) {
 }
 
 /**
+ * Normaliza textos para comparações e buscas insensíveis a acentos,
+ * caracteres diacríticos e maiúsculas/minúsculas.
+ * Ex: "Não Deixe o Samba Morrer" -> "nao deixe o samba morrer"
+ * Ex: "Legião Urbana" -> "legiao urbana"
+ * Ex: "Álibi" -> "alibi"
+ */
+export function normalizeText(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
  * Converte faixas do Deezer em formato unificado
  */
 function normalizeDeezerTracks(items) {
@@ -225,7 +241,7 @@ export async function fetchGenreCatalog(genreId) {
     const uniqueTracks = [];
 
     for (const track of rawTracks) {
-      const key = `${track.artist.toLowerCase().trim()}|${track.title.toLowerCase().trim()}`;
+      const key = `${normalizeText(track.artist)}|${normalizeText(track.title)}`;
       if (!seenKeys.has(key)) {
         seenKeys.add(key);
         uniqueTracks.push(track);
@@ -265,20 +281,30 @@ export function getRandomTrackFromCatalog(catalog, excludeIds = []) {
 }
 
 /**
- * Filtra as músicas do catálogo para o autocomplete
+ * Filtra as músicas do catálogo para o autocomplete (insensível a acentuação e tolerante a múltiplos termos)
  */
 export function filterTracksForSearch(catalog, query) {
-  if (!query || !query.trim() || !catalog) return [];
+  if (!query || !query.trim() || !catalog || !Array.isArray(catalog)) return [];
   
-  const cleanQuery = query.toLowerCase().trim();
+  const cleanQuery = normalizeText(query);
+  if (!cleanQuery) return [];
   
+  const queryTokens = cleanQuery.split(/\s+/).filter(Boolean);
+
   return catalog
     .filter(track => {
-      const matchTitle = track.title.toLowerCase().includes(cleanQuery);
-      const matchArtist = track.artist.toLowerCase().includes(cleanQuery);
-      return matchTitle || matchArtist;
+      const normTitle = normalizeText(track.title);
+      const normArtist = normalizeText(track.artist);
+      const combined = `${normTitle} ${normArtist}`;
+
+      // Correspondência direta com a busca inteira no título/artista
+      if (normTitle.includes(cleanQuery) || normArtist.includes(cleanQuery)) {
+        return true;
+      }
+      // Ou correspondência de todos os termos digitados na combinação (título + artista)
+      return queryTokens.every(token => combined.includes(token));
     })
-    .slice(0, 8);
+    .slice(0, 10);
 }
 
 /**

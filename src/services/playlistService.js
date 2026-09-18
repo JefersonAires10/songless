@@ -1,4 +1,4 @@
-import { sanitizeTrackTitle, searchTrackPreviewFallback } from './musicService.js';
+import { sanitizeTrackTitle, searchTrackPreviewFallback, normalizeText } from './musicService.js';
 
 const PLAYLISTS_STORAGE_KEY = 'songless_custom_playlists_v1';
 
@@ -242,7 +242,7 @@ export async function importPlaylistFromInput(input) {
   const uniqueTracks = [];
 
   for (const t of playlist.tracks) {
-    const key = `${t.artist.toLowerCase().trim()}|${t.title.toLowerCase().trim()}`;
+    const key = `${normalizeText(t.artist)}|${normalizeText(t.title)}`;
     if (!seen.has(key)) {
       seen.add(key);
       uniqueTracks.push(t);

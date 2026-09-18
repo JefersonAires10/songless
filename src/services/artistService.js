@@ -1,4 +1,4 @@
-import { sanitizeTrackTitle } from './musicService.js';
+import { sanitizeTrackTitle, normalizeText } from './musicService.js';
 import { GENRES } from '../config/genres.js';
 
 // Cache em memória para catálogos de artistas com TTL (10 minutos)
@@ -232,7 +232,7 @@ export async function fetchArtistCatalog(artistName, knownArtistId = null, known
     if (onlineResults && onlineResults.length > 0) {
       // Prioriza correspondência exata ou primeiro resultado
       const exactMatch = onlineResults.find(
-        a => a.name.toLowerCase().trim() === artistName.toLowerCase().trim()
+        a => normalizeText(a.name) === normalizeText(artistName)
       );
       const chosen = exactMatch || onlineResults[0];
       artistId = chosen.id;
@@ -292,7 +292,7 @@ export async function fetchArtistCatalog(artistName, knownArtistId = null, known
   const uniqueTracks = [];
 
   for (const t of normalizedTracks) {
-    const key = t.title.toLowerCase().trim();
+    const key = normalizeText(t.title);
     if (!seenTitles.has(key)) {
       seenTitles.add(key);
       uniqueTracks.push(t);

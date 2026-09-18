@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, Search, Mic2, Sparkles, Loader2, Check, User, Music } from 'lucide-react';
 import { getCuratedArtists, searchArtistsOnline } from '../services/artistService.js';
+import { normalizeText } from '../services/musicService.js';
 import { GENRES } from '../config/genres.js';
 
 export function ArtistSelectModal({
@@ -56,7 +57,7 @@ export function ArtistSelectModal({
     };
   }, [searchTerm]);
 
-  // Artistas filtrados localmente por gênero e texto
+  // Artistas filtrados localmente por gênero e texto (insensível a acentos)
   const filteredCurated = useMemo(() => {
     let list = curatedList;
 
@@ -65,8 +66,8 @@ export function ArtistSelectModal({
     }
 
     if (searchTerm.trim()) {
-      const q = searchTerm.toLowerCase().trim();
-      list = list.filter(a => a.name.toLowerCase().includes(q));
+      const q = normalizeText(searchTerm);
+      list = list.filter(a => normalizeText(a.name).includes(q));
     }
 
     return list;
@@ -173,7 +174,7 @@ export function ArtistSelectModal({
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 {onlineResults.map((artist) => {
-                  const isSelected = activeArtistName?.toLowerCase() === artist.name.toLowerCase();
+                  const isSelected = normalizeText(activeArtistName) === normalizeText(artist.name);
                   return (
                     <button
                       key={artist.id}
@@ -228,7 +229,7 @@ export function ArtistSelectModal({
             {filteredCurated.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
                 {filteredCurated.map((artist) => {
-                  const isSelected = activeArtistName?.toLowerCase() === artist.name.toLowerCase();
+                  const isSelected = normalizeText(activeArtistName) === normalizeText(artist.name);
                   return (
                     <button
                       key={artist.id}
