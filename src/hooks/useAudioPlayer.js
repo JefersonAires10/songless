@@ -7,9 +7,12 @@ export const FINAL_TIME_LIMIT = 30.0;
 
 /**
  * Hook customizado para controle de áudio milimétrico do Songless com autorrecuperação de tokens.
- * Garante que cada reprodução comece RIGOROSAMENTE em 0.0s (início da música/trecho)
- * e pause exatamente no limite liberado pela tentativa.
- * Renova proativamente ou reativamente links expirados (ex: tokens de 15min do Deezer CDN).
+ * Garante que cada reprodução:
+ * 1. Comece RIGOROSAMENTE em 0.0s (início da faixa);
+ * 2. Inicie de forma 100% SÍNCRONA na interação do usuário (respeitando o user gesture do iOS Safari e mobile Chrome);
+ * 3. Conte o tempo com alta precisão (performance.now) somente a partir do momento em que o áudio realmente começa a sair pelo hardware ('playing');
+ * 4. Isole cada clique com um playId incremental, eliminando resíduos de seek assíncronos e eventos 'pause' em fila ("uma vez sim outra não");
+ * 5. Pause exatamente no limite liberado pela tentativa.
  */
 export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = false, onTrackUpdated = null) {
   const currentTrack = (trackOrUrl && typeof trackOrUrl === 'object') ? trackOrUrl : null;
@@ -25,6 +28,8 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
   const animationFrameRef = useRef(null);
   const stopTimeoutRef = useRef(null);
   const playbackStartTimeRef = useRef(null);
+  const playingHandlerRef = useRef(null);
+  const playIdRef = useRef(0);
   const isRefreshingRef = useRef(false);
 
   // Sincroniza activeUrl quando a faixa ou URL de entrada mudar
@@ -68,6 +73,9 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
 
   // Função para parar a reprodução do trecho e rebobinar para 0.0s
   const stopPlayback = useCallback(() => {
+    // Incrementa playId para invalidar qualquer timeout, frame ou evento assíncrono em andamento
+    playIdRef.current += 1;
+
     if (stopTimeoutRef.current) {
       clearTimeout(stopTimeoutRef.current);
       stopTimeoutRef.current = null;
@@ -79,18 +87,26 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
 
     const audio = audioRef.current;
     if (audio) {
+      if (playingHandlerRef.current) {
+        audio.removeEventListener('playing', playingHandlerRef.current);
+        playingHandlerRef.current = null;
+      }
       audio.pause();
       try {
         audio.currentTime = 0;
       } catch (e) {}
     }
 
+    playbackStartTimeRef.current = null;
     setCurrentTime(0);
     setIsPlaying(false);
+    setIsLoading(false);
   }, []);
 
   // Limpeza completa do elemento de áudio
   const cleanupAudio = useCallback(() => {
+    playIdRef.current += 1;
+
     if (stopTimeoutRef.current) {
       clearTimeout(stopTimeoutRef.current);
       stopTimeoutRef.current = null;
@@ -102,6 +118,10 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
 
     if (audioRef.current) {
       const audio = audioRef.current;
+      if (playingHandlerRef.current) {
+        audio.removeEventListener('playing', playingHandlerRef.current);
+        playingHandlerRef.current = null;
+      }
       audio.oncanplay = null;
       audio.oncanplaythrough = null;
       audio.onerror = null;
@@ -113,39 +133,6 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       audioRef.current = null;
     }
   }, []);
-
-  // Monitor de reprodução milimétrico com requestAnimationFrame e proteção anti-stale seek
-  const monitorPlayback = useCallback(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const elapsedWall = playbackStartTimeRef.current 
-      ? (performance.now() - playbackStartTimeRef.current) / 1000 
-      : 0;
-    const audioTime = audio.currentTime || 0;
-
-    // No mobile (Safari / Chrome), se a reprodução acabou de iniciar (< 60ms),
-    // audio.currentTime pode retornar resíduo stale da reprodução anterior (ex: 0.10s).
-    // Só validamos audioTime quando houver transcorrido tempo mínimo plausível.
-    const isStaleAudioTime = elapsedWall < 0.06 && audioTime >= maxAllowedTime;
-
-    const displayTime = isStaleAudioTime 
-      ? Math.min(maxAllowedTime, elapsedWall) 
-      : Math.min(maxAllowedTime, Math.max(audioTime, elapsedWall));
-    setCurrentTime(displayTime);
-
-    // Se atingiu o limite de tempo estipulado
-    const reachedLimit = elapsedWall >= maxAllowedTime || (!isStaleAudioTime && audioTime >= maxAllowedTime);
-
-    if (reachedLimit) {
-      stopPlayback();
-      return;
-    }
-
-    if (!audio.paused) {
-      animationFrameRef.current = requestAnimationFrame(monitorPlayback);
-    }
-  }, [maxAllowedTime, stopPlayback]);
 
   // Tenta renovar o link de áudio e recarregar o player em caso de falha ou expiração
   const attemptRenewAudio = useCallback(async () => {
@@ -171,12 +158,16 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
     return null;
   }, [currentTrack, onTrackUpdated]);
 
-  // Função para dar Play garantindo início ESTRITO em 0.0s e autorrecuperação
-  const play = useCallback(async () => {
-    let audio = audioRef.current;
+  // Função para dar Play com execução 100% SÍNCRONA no clique do usuário (essencial para mobile Safari/Chrome)
+  const play = useCallback(() => {
+    const audio = audioRef.current;
     if (!audio) return;
 
-    // Cancela qualquer execução pendente
+    // 1. Gera novo ID único para este ciclo de play. Qualquer callback de clique anterior será descartado.
+    playIdRef.current += 1;
+    const thisPlayId = playIdRef.current;
+
+    // 2. Limpa timeouts, frames e listeners residuais
     if (stopTimeoutRef.current) {
       clearTimeout(stopTimeoutRef.current);
       stopTimeoutRef.current = null;
@@ -185,78 +176,137 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
-
-    // Se estiver em estado de erro ou com URL expirada, renova antes de tocar
-    if (hasError || audio.error || !audio.src || isPreviewUrlExpired(audio.src)) {
-      const freshUrl = await attemptRenewAudio();
-      if (freshUrl && audioRef.current) {
-        audio = audioRef.current;
-        audio.src = freshUrl;
-        audio.load();
-        setHasError(false);
-        // Aguarda canplay
-        await new Promise(resolve => {
-          const onReady = () => {
-            audio.removeEventListener('canplay', onReady);
-            resolve();
-          };
-          audio.addEventListener('canplay', onReady);
-          setTimeout(resolve, 800);
-        });
-      }
+    if (playingHandlerRef.current) {
+      audio.removeEventListener('playing', playingHandlerRef.current);
+      playingHandlerRef.current = null;
     }
 
-    // 1. Pausa e força rebobinamento para 0.0s ANTES de iniciar a reprodução
-    audio.pause();
+    // 3. Se estiver tocando, pausa antes de reiniciar
+    if (!audio.paused) {
+      audio.pause();
+    }
+
+    // 4. Força rebobinamento síncrono para o início
     try {
       audio.currentTime = 0;
     } catch (e) {}
+    playbackStartTimeRef.current = null;
     setCurrentTime(0);
 
-    // Se o áudio estiver em processo de busca/seeking ou se currentTime ainda não estiver zerado,
-    // aguarda brevemente pelo evento 'seeked' para garantir que o buffer começa rigorosamente em 0.0s
-    if (audio.seeking || audio.currentTime > 0.02) {
-      await new Promise(resolve => {
-        const onSeeked = () => {
-          audio.removeEventListener('seeked', onSeeked);
-          resolve();
-        };
-        audio.addEventListener('seeked', onSeeked, { once: true });
-        try {
-          audio.currentTime = 0;
-        } catch (e) {}
-        setTimeout(resolve, 70);
+    // 5. Se o áudio estiver em estado de erro ou com URL nula, tenta renovar
+    if (hasError || !audio.src || isPreviewUrlExpired(audio.src)) {
+      attemptRenewAudio().then((freshUrl) => {
+        if (freshUrl && audioRef.current) {
+          audioRef.current.src = freshUrl;
+          audioRef.current.load();
+          setHasError(false);
+        }
       });
+      return;
     }
 
-    try {
-      await audio.play();
+    // 6. Duração do trecho em milissegundos
+    // Para 0.1s no mobile, reservamos 120ms acústicos para compensar o tempo de subida (attack) do alto-falante
+    const durationMs = maxAllowedTime <= 0.1 ? 120 : Math.round(maxAllowedTime * 1000);
 
-      // Registra timestamp real do início para cálculo milimétrico no mobile
+    // 7. Função de início do monitoramento quando o som de fato começar a sair pelos alto-falantes
+    const startPlaybackTracking = () => {
+      if (playIdRef.current !== thisPlayId) return;
+      if (playbackStartTimeRef.current !== null) return;
+
       playbackStartTimeRef.current = performance.now();
       setIsPlaying(true);
       setHasError(false);
 
-      // Timeout exato de segurança contra throttling de requestAnimationFrame em mobile/tablet
-      const timeoutMs = Math.round(maxAllowedTime * 1000);
+      // Timer de segurança contra throttling de requestAnimationFrame
+      if (stopTimeoutRef.current) clearTimeout(stopTimeoutRef.current);
       stopTimeoutRef.current = setTimeout(() => {
-        stopPlayback();
-      }, timeoutMs);
-
-      animationFrameRef.current = requestAnimationFrame(monitorPlayback);
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.warn('[AudioPlayer] Play impedido pelo navegador:', err);
-        // NotSupportedError ocorre quando a URL retornou 403 Forbidden ou foi invalidada
-        if (err.name === 'NotSupportedError') {
-          setHasError(true);
-          // Tenta renovar em segundo plano para o próximo toque
-          attemptRenewAudio();
+        if (playIdRef.current === thisPlayId) {
+          stopPlayback();
         }
+      }, durationMs);
+
+      // Monitor de alta frequência via requestAnimationFrame
+      const monitor = () => {
+        if (playIdRef.current !== thisPlayId) return;
+        const curAudio = audioRef.current;
+        if (!curAudio) return;
+
+        if (playbackStartTimeRef.current === null) {
+          if (!curAudio.paused) {
+            animationFrameRef.current = requestAnimationFrame(monitor);
+          }
+          return;
+        }
+
+        const elapsedWall = (performance.now() - playbackStartTimeRef.current) / 1000;
+        const audioTime = curAudio.currentTime || 0;
+
+        // Atualização contínua da barra de progresso
+        const displayTime = Math.min(maxAllowedTime, elapsedWall);
+        setCurrentTime(displayTime);
+
+        // Condição de parada rigorosa:
+        // - Para trechos de 0.1s: paramos em 0.12s de relógio real (acústico ideal)
+        // - Para outros trechos: paramos em maxAllowedTime de relógio real
+        // - NUNCA confiamos em audio.currentTime nos primeiros 150ms porque no iOS Safari
+        //   audio.currentTime é quantizado em 250ms e retém valores stale da reprodução anterior!
+        const targetWallLimit = maxAllowedTime <= 0.1 ? 0.12 : maxAllowedTime;
+        const reachedDuration = elapsedWall >= targetWallLimit;
+        const reachedAudioLimit = elapsedWall >= 0.15 && audioTime >= maxAllowedTime;
+
+        if (reachedDuration || reachedAudioLimit) {
+          stopPlayback();
+          return;
+        }
+
+        if (!curAudio.paused) {
+          animationFrameRef.current = requestAnimationFrame(monitor);
+        }
+      };
+
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = requestAnimationFrame(monitor);
+    };
+
+    // 8. O evento 'playing' dispara exatamente quando o hardware do dispositivo começa a emitir áudio
+    const onPlaying = () => {
+      if (playIdRef.current === thisPlayId) {
+        startPlaybackTracking();
       }
-      setIsPlaying(false);
+    };
+    playingHandlerRef.current = onPlaying;
+    audio.addEventListener('playing', onPlaying, { once: true });
+
+    // 9. Chamada estritamente síncrona a audio.play() dentro do contexto do clique
+    const playPromise = audio.play();
+
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          // Fallback: se o evento 'playing' do WebView demorar mais de 80ms, inicia o rastreamento
+          setTimeout(() => {
+            if (playIdRef.current === thisPlayId && playbackStartTimeRef.current === null) {
+              if (audioRef.current && !audioRef.current.paused) {
+                startPlaybackTracking();
+              }
+            }
+          }, 80);
+        })
+        .catch((err) => {
+          if (playIdRef.current === thisPlayId) {
+            if (err.name !== 'AbortError') {
+              console.warn('[AudioPlayer] Play impedido pelo navegador:', err);
+              if (err.name === 'NotSupportedError') {
+                setHasError(true);
+                attemptRenewAudio();
+              }
+            }
+            stopPlayback();
+          }
+        });
     }
-  }, [hasError, attemptRenewAudio, maxAllowedTime, monitorPlayback, stopPlayback]);
+  }, [maxAllowedTime, stopPlayback, attemptRenewAudio, hasError]);
 
   // Função para pausar e sempre rebobinar para 0.0s
   const pause = useCallback(() => {
@@ -268,11 +318,11 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
     const audio = audioRef.current;
     const isCurrentlyPlaying = isPlaying || (audio && !audio.paused);
     if (isCurrentlyPlaying) {
-      pause();
+      stopPlayback();
     } else {
       play();
     }
-  }, [isPlaying, play, pause]);
+  }, [isPlaying, play, stopPlayback]);
 
   // Para a reprodução e reseta ponteiros
   const stop = useCallback(() => {
@@ -291,7 +341,11 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       return;
     }
 
-    setIsLoading(true);
+    // No mobile (iOS Safari / Chrome Mobile), o navegador NÃO pré-carrega áudio em segundo plano.
+    // O evento 'canplay' nunca dispara antes do primeiro clique do usuário.
+    // Portanto, NÃO deixamos isLoading = true bloqueando o botão de play!
+    // O player fica com isLoading = false (pronto para o usuário tocar).
+    setIsLoading(false);
     setHasError(false);
     setIsPlaying(false);
     setCurrentTime(0);
@@ -312,17 +366,23 @@ export function useAudioPlayer(trackOrUrl, currentAttemptIndex, isGameOver = fal
       setHasError(false);
     };
 
+    audio.onwaiting = () => {
+      if (isDisposed) return;
+      // Mostra loading apenas se estiver tentando tocar e o buffer estiver vazio
+      if (audioRef.current && !audioRef.current.paused) {
+        setIsLoading(true);
+      }
+    };
+
+    audio.onplaying = () => {
+      if (isDisposed) return;
+      setIsLoading(false);
+    };
+
     audio.onpause = () => {
       if (isDisposed) return;
-      // Garante sincronização imediata do estado se o browser/OS pausar o áudio
-      setIsPlaying(false);
-      if (stopTimeoutRef.current) {
-        clearTimeout(stopTimeoutRef.current);
-        stopTimeoutRef.current = null;
-      }
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+      if (audio.paused) {
+        setIsPlaying(false);
       }
     };
 

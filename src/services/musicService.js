@@ -73,9 +73,19 @@ export function normalizeText(text) {
 /**
  * Converte faixas do Deezer em formato unificado
  */
-function normalizeDeezerTracks(items) {
+function normalizeDeezerTracks(items, targetArtist = '') {
+  const normTarget = normalizeText(targetArtist);
   return items
-    .filter(track => track.preview && track.title && (track.artist?.name || track.artist))
+    .filter(track => {
+      if (!track.preview || !track.title || !(track.artist?.name || track.artist)) return false;
+      if (normTarget) {
+        const trackArtist = normalizeText(track.artist?.name || track.artist || '');
+        const trackTitle = normalizeText(track.title || '');
+        const isMatch = trackArtist.includes(normTarget) || normTarget.includes(trackArtist) || trackTitle.includes(normTarget);
+        if (!isMatch) return false;
+      }
+      return true;
+    })
     .map(track => {
       const cleanTitle = sanitizeTrackTitle(track.title);
       const artistName = track.artist?.name || track.artist || 'Artista';
@@ -105,7 +115,7 @@ function fetchDeezerArtistTracks(artistName) {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
       fetch(`https://api.deezer.com/search?q=${encodeURIComponent(artistName)}&limit=5`)
         .then(r => r.json())
-        .then(data => resolve(normalizeDeezerTracks(data.data || [])))
+        .then(data => resolve(normalizeDeezerTracks(data.data || [], artistName)))
         .catch(() => resolve([]));
       return;
     }
@@ -113,10 +123,11 @@ function fetchDeezerArtistTracks(artistName) {
     const callbackName = 'deezer_cb_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now();
     const script = document.createElement('script');
 
+    // Timeout rápido de 3000ms: se o Deezer atrasar ou falhar no mobile, cai imediatamente para a Apple API
     const timer = setTimeout(() => {
       cleanup();
       resolve([]);
-    }, 8000);
+    }, 3000);
 
     const cleanup = () => {
       clearTimeout(timer);
@@ -131,7 +142,7 @@ function fetchDeezerArtistTracks(artistName) {
     window[callbackName] = (data) => {
       cleanup();
       if (data && Array.isArray(data.data)) {
-        resolve(normalizeDeezerTracks(data.data));
+        resolve(normalizeDeezerTracks(data.data, artistName));
       } else {
         resolve([]);
       }
@@ -214,6 +225,20 @@ export async function fetchGenreCatalog(genreId) {
     return cached.catalog;
   }
 
+  // 1.5. Verifica cache em sessionStorage para carregamento instantâneo no mobile
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    try {
+      const stored = window.sessionStorage.getItem('songless_cat_' + genreId);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          catalogCache.set(genreId, { catalog: parsed, timestamp: Date.now() });
+          return parsed;
+        }
+      }
+    } catch (e) {}
+  }
+
   // 2. Reutiliza requisição em andamento para o mesmo gênero
   if (pendingRequests.has(genreId)) {
     return pendingRequests.get(genreId);
@@ -250,9 +275,14 @@ export async function fetchGenreCatalog(genreId) {
 
     const finalizedCatalog = shuffleArray(uniqueTracks);
 
-    // Salva no cache com timestamp
+    // Salva no cache em memória e sessionStorage
     if (finalizedCatalog.length > 0) {
       catalogCache.set(genreId, { catalog: finalizedCatalog, timestamp: Date.now() });
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        try {
+          window.sessionStorage.setItem('songless_cat_' + genreId, JSON.stringify(finalizedCatalog));
+        } catch (e) {}
+      }
     }
 
     return finalizedCatalog;
