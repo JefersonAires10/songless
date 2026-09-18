@@ -20,12 +20,13 @@ function spotifyPlaylistPlugin() {
 
     try {
       const url = new URL(req.url, 'http://localhost');
-      const playlistId = url.searchParams.get('id');
+      const mediaId = url.searchParams.get('id');
+      const mediaType = url.searchParams.get('type') === 'album' ? 'album' : 'playlist';
 
-      if (!playlistId) {
+      if (!mediaId) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'Parâmetro "id" da playlist é obrigatório.' }));
+        res.end(JSON.stringify({ error: 'Parâmetro "id" da playlist ou álbum é obrigatório.' }));
         return;
       }
 
@@ -37,7 +38,7 @@ function spotifyPlaylistPlugin() {
         }
       };
 
-      https.get(`https://open.spotify.com/embed/playlist/${playlistId}`, options, (upstreamRes) => {
+      https.get(`https://open.spotify.com/embed/${mediaType}/${mediaId}`, options, (upstreamRes) => {
         let htmlData = '';
         upstreamRes.on('data', chunk => { htmlData += chunk; });
         upstreamRes.on('end', () => {
@@ -46,7 +47,7 @@ function spotifyPlaylistPlugin() {
             if (idx === -1) {
               res.statusCode = 502;
               res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: 'Não foi possível ler os dados da playlist no Spotify.' }));
+              res.end(JSON.stringify({ error: `Não foi possível ler os dados ${mediaType === 'album' ? 'do álbum' : 'da playlist'} no Spotify.` }));
               return;
             }
 
@@ -58,7 +59,7 @@ function spotifyPlaylistPlugin() {
             if (pageProps?.status === 404) {
               res.statusCode = 404;
               res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: 'Playlist não encontrada ou privada. Certifique-se de que o link é de uma playlist pública.' }));
+              res.end(JSON.stringify({ error: `${mediaType === 'album' ? 'Álbum' : 'Playlist'} não encontrado(a) ou privado(a). Certifique-se de que o link é público.` }));
               return;
             }
 
@@ -66,7 +67,7 @@ function spotifyPlaylistPlugin() {
             if (!entity) {
               res.statusCode = 404;
               res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: 'Nenhuma informação de playlist encontrada.' }));
+              res.end(JSON.stringify({ error: `Nenhuma informação de ${mediaType === 'album' ? 'álbum' : 'playlist'} encontrada.` }));
               return;
             }
 
@@ -77,8 +78,11 @@ function spotifyPlaylistPlugin() {
             res.statusCode = 200;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({
-              id: playlistId,
-              name: entity.name || 'Playlist Importada',
+              id: mediaId,
+              type: entity.type || mediaType,
+              name: entity.name || (mediaType === 'album' ? 'Álbum Importado' : 'Playlist Importada'),
+              albumTitle: entity.name,
+              artistName: entity.subtitle || '',
               description: entity.subtitle || '',
               cover: coverUrl,
               trackList: entity.trackList || []

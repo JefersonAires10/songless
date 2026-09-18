@@ -10,10 +10,11 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { id } = req.query || {};
+  const { id, type } = req.query || {};
+  const mediaType = type === 'album' ? 'album' : 'playlist';
 
   if (!id) {
-    return res.status(400).json({ error: 'Parâmetro "id" da playlist é obrigatório.' });
+    return res.status(400).json({ error: 'Parâmetro "id" da playlist ou álbum é obrigatório.' });
   }
 
   const options = {
@@ -24,14 +25,14 @@ export default async function handler(req, res) {
     }
   };
 
-  https.get(`https://open.spotify.com/embed/playlist/${id}`, options, (upstreamRes) => {
+  https.get(`https://open.spotify.com/embed/${mediaType}/${id}`, options, (upstreamRes) => {
     let htmlData = '';
     upstreamRes.on('data', chunk => { htmlData += chunk; });
     upstreamRes.on('end', () => {
       try {
         const idx = htmlData.indexOf('__NEXT_DATA__');
         if (idx === -1) {
-          return res.status(502).json({ error: 'Não foi possível ler os dados da playlist no Spotify.' });
+          return res.status(502).json({ error: `Não foi possível ler os dados ${mediaType === 'album' ? 'do álbum' : 'da playlist'} no Spotify.` });
         }
 
         const start = htmlData.indexOf('>', idx) + 1;
@@ -40,12 +41,12 @@ export default async function handler(req, res) {
         const pageProps = json.props?.pageProps;
 
         if (pageProps?.status === 404) {
-          return res.status(404).json({ error: 'Playlist não encontrada ou privada. Certifique-se de que o link é de uma playlist pública.' });
+          return res.status(404).json({ error: `${mediaType === 'album' ? 'Álbum' : 'Playlist'} não encontrado(a) ou privado(a). Certifique-se de que o link é público.` });
         }
 
         const entity = pageProps?.state?.data?.entity;
         if (!entity) {
-          return res.status(404).json({ error: 'Nenhuma informação de playlist encontrada.' });
+          return res.status(404).json({ error: `Nenhuma informação de ${mediaType === 'album' ? 'álbum' : 'playlist'} encontrada.` });
         }
 
         const coverUrl = entity.visualIdentity?.image?.[0]?.url ||
@@ -54,7 +55,10 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
           id,
-          name: entity.name || 'Playlist Importada',
+          type: entity.type || mediaType,
+          name: entity.name || (mediaType === 'album' ? 'Álbum Importado' : 'Playlist Importada'),
+          albumTitle: entity.name,
+          artistName: entity.subtitle || '',
           description: entity.subtitle || '',
           cover: coverUrl,
           trackList: entity.trackList || []

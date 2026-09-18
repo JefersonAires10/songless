@@ -5,12 +5,16 @@ import { importPlaylistFromInput, saveCustomPlaylist } from '../services/playlis
 // Exemplos rápidos para testar com 1 clique
 const PRESET_EXAMPLES = [
   {
-    name: "Today's Top Hits (Spotify)",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    name: "Daft Punk - Discovery (Álbum)",
+    url: "https://open.spotify.com/album/2noRn2Aes5aoNVsU6iWThc",
   },
   {
-    name: "RapCaviar (Spotify)",
-    url: "https://open.spotify.com/playlist/37i9dQZF1DX0XUsuxWHRQd",
+    name: "Legião Urbana - As Quatro Estações (Álbum)",
+    url: "https://www.deezer.com/album/334196",
+  },
+  {
+    name: "Today's Top Hits (Spotify)",
+    url: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
   },
   {
     name: "Top Worldwide (Deezer)",
@@ -29,7 +33,7 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
   const handleImport = async (urlToUse) => {
     const targetUrl = (urlToUse || urlInput).trim();
     if (!targetUrl) {
-      setErrorMessage('Por favor, cole o link da playlist.');
+      setErrorMessage('Por favor, cole o link da playlist ou do álbum.');
       return;
     }
 
@@ -45,7 +49,7 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
       onClose();
     } catch (err) {
       console.error('[ImportPlaylistModal] Erro:', err);
-      setErrorMessage(err.message || 'Erro ao importar playlist. Verifique se o link está correto e a playlist é pública.');
+      setErrorMessage(err.message || 'Erro ao importar playlist ou álbum. Verifique se o link está correto e o conteúdo é público.');
     } finally {
       setIsLoading(false);
     }
@@ -85,10 +89,10 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
           </div>
           <div>
             <h2 className="text-xl font-black text-white tracking-tight">
-              Importar Playlist
+              Importar Playlist ou Álbum
             </h2>
             <p className="text-xs text-spotify-subdued">
-              Jogue adivinhando exclusivamente as faixas da sua playlist
+              Jogue adivinhando exclusivamente as faixas da sua playlist ou álbum
             </p>
           </div>
         </div>
@@ -103,7 +107,7 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
         >
           <div>
             <label className="block text-xs font-bold text-spotify-subdued uppercase tracking-wider mb-2">
-              Link da Playlist (Spotify ou Deezer)
+              Link da Playlist ou Álbum (Spotify ou Deezer)
             </label>
             <div className="relative flex items-center">
               <div className="absolute left-3.5 text-spotify-subdued pointer-events-none">
@@ -117,7 +121,7 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
                   setErrorMessage(null);
                 }}
                 disabled={isLoading}
-                placeholder="https://open.spotify.com/playlist/..."
+                placeholder="https://open.spotify.com/album/... ou /playlist/..."
                 className="w-full h-12 pl-10 pr-20 rounded-xl bg-[#181818] border border-[#3e3e3e] focus:border-spotify-green focus:ring-1 focus:ring-spotify-green text-sm text-white placeholder:text-neutral-500 transition-all outline-none"
               />
               <button
@@ -171,7 +175,7 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
             >
               <span className="flex items-center gap-1.5">
                 <HelpCircle className="w-3.5 h-3.5 text-spotify-green" />
-                Como pegar o link público da playlist?
+                Como pegar o link público da playlist ou álbum?
               </span>
               <span className="text-[10px] text-neutral-500 uppercase">
                 {showHelp ? 'Ocultar' : 'Ver passos'}
@@ -180,11 +184,11 @@ export function ImportPlaylistModal({ isOpen, onClose, onImportSuccess }) {
 
             {showHelp && (
               <div className="mt-2.5 pt-2.5 border-t border-[#222] space-y-1.5 text-[11px] text-neutral-400 animate-in fade-in">
-                <p>1. No Spotify, abra a playlist que você deseja usar.</p>
-                <p>2. Clique nos <strong>três pontinhos (···)</strong> ao lado do botão de Play.</p>
-                <p>3. Selecione <strong>Compartilhar</strong> → <strong>Copiar link da playlist</strong>.</p>
+                <p>1. No Spotify ou Deezer, abra a playlist ou álbum que você deseja usar.</p>
+                <p>2. Clique nos <strong>três pontinhos (···)</strong> ao lado do título ou botão de Play.</p>
+                <p>3. Selecione <strong>Compartilhar</strong> → <strong>Copiar link</strong>.</p>
                 <p className="text-spotify-green pt-0.5">
-                  ★ Importante: A playlist precisa ser pública para que o Songless consiga carregar as faixas!
+                  ★ Importante: O álbum ou playlist precisa ser público para que o Songless consiga carregar as faixas!
                 </p>
               </div>
             )}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Music, BarChart2, HelpCircle, ChevronDown, Check, Sparkles, Plus, Trash2, ListMusic, Mic2 } from 'lucide-react';
+import { Music, BarChart2, HelpCircle, ChevronDown, Check, Sparkles, Plus, Trash2, ListMusic, Mic2, Disc } from 'lucide-react';
 import { GENRES } from '../config/genres';
 
 export function Header({
@@ -70,14 +70,14 @@ export function Header({
           <span>Artistas</span>
         </button>
 
-        {/* Botão de Destaque: Importar Playlist (visível em telas sm+) */}
+        {/* Botão de Destaque: Importar Playlist ou Álbum (visível em telas sm+) */}
         <button
           onClick={onOpenImportModal}
           className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-spotify-card hover:bg-spotify-card-hover border border-[#3e3e3e] text-white font-extrabold text-xs transition-all hover:scale-105 active:scale-95 focus:outline-none shrink-0"
-          title="Importar Playlist do Spotify ou Deezer"
+          title="Importar Playlist ou Álbum (Spotify ou Deezer)"
         >
           <Plus className="w-3.5 h-3.5 text-spotify-green" strokeWidth={3} />
-          <span>Playlist</span>
+          <span>Importar</span>
         </button>
 
         {/* Seletor de Categoria / Playlist / Artista */}
@@ -91,12 +91,16 @@ export function Header({
                 ? 'bg-spotify-green/10 border-spotify-green/50 text-spotify-green hover:bg-spotify-green/20'
                 : 'bg-spotify-card hover:bg-spotify-card-hover border-[#3e3e3e] text-white'
             }`}
-            title="Trocar Gênero, Artista ou Playlist"
+            title="Trocar Gênero, Artista ou Coleção"
           >
             {activeArtist ? (
               <Mic2 className="w-3.5 h-3.5 text-spotify-green shrink-0" />
             ) : activeCustomPlaylist ? (
-              <ListMusic className="w-3.5 h-3.5 text-spotify-green shrink-0" />
+              activeCustomPlaylist.type === 'album' ? (
+                <Disc className="w-3.5 h-3.5 text-spotify-green shrink-0" />
+              ) : (
+                <ListMusic className="w-3.5 h-3.5 text-spotify-green shrink-0" />
+              )
             ) : null}
             <span className="max-w-[100px] xs:max-w-[120px] sm:max-w-[140px] truncate">
               {activeDisplayName}
@@ -134,7 +138,7 @@ export function Header({
                   className="w-full py-1.5 px-3 rounded-lg bg-[#252525] hover:bg-[#303030] text-neutral-300 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5 text-spotify-green" />
-                  <span>Importar Playlist (Spotify/Deezer)</span>
+                  <span>Importar Playlist ou Álbum</span>
                 </button>
               </div>
 
@@ -148,13 +152,13 @@ export function Header({
                   <Check className="w-4 h-4 text-spotify-green shrink-0" />
                 </div>
               )}
-              {/* Playlists Personalizadas Importadas */}
+              {/* Playlists e Álbuns Personalizados Importados */}
               {customPlaylists.length > 0 && (
                 <>
                   <div className="px-3.5 py-1.5 border-b border-[#333] mb-1 flex items-center justify-between">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-spotify-green flex items-center gap-1.5">
                       <ListMusic className="w-3.5 h-3.5" />
-                      Minhas Playlists
+                      Minhas Importações
                     </span>
                     <span className="text-[10px] text-neutral-500 font-mono">
                       {customPlaylists.length}
@@ -162,6 +166,7 @@ export function Header({
                   </div>
                   {customPlaylists.map(playlist => {
                     const isSelected = activeCustomPlaylist?.id === playlist.id;
+                    const isAlbum = playlist.type === 'album';
                     return (
                       <div
                         key={playlist.id}
@@ -176,12 +181,19 @@ export function Header({
                           }}
                           className="flex-1 text-left min-w-0 pr-2 flex items-center gap-2"
                         >
+                          <div className="w-6 h-6 rounded bg-[#222] border border-[#444] flex items-center justify-center shrink-0 text-spotify-subdued">
+                            {isAlbum ? (
+                              <Disc className="w-3.5 h-3.5 text-spotify-green" />
+                            ) : (
+                              <ListMusic className="w-3.5 h-3.5 text-spotify-green" />
+                            )}
+                          </div>
                           <div className="min-w-0 flex-1">
                             <p className={`text-xs font-bold truncate ${isSelected ? 'text-spotify-green' : 'text-white'}`}>
                               {playlist.name}
                             </p>
                             <p className="text-[10px] text-spotify-subdued truncate">
-                              {playlist.tracks?.length || 0} músicas • {playlist.provider === 'deezer' ? 'Deezer' : 'Spotify'}
+                              {playlist.tracks?.length || 0} faixas • {isAlbum ? 'Álbum' : 'Playlist'} ({playlist.provider === 'deezer' ? 'Deezer' : 'Spotify'})
                             </p>
                           </div>
                         </button>
@@ -196,7 +208,7 @@ export function Header({
                               onDeleteCustomPlaylist(playlist.id);
                             }}
                             className="p-1 rounded hover:bg-spotify-red/20 text-neutral-500 hover:text-spotify-red transition-colors opacity-60 hover:opacity-100"
-                            title="Excluir playlist salva"
+                            title="Excluir item salvo"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>

@@ -328,12 +328,14 @@ export default function App() {
               {activeArtist
                 ? `Sintonizando as melhores músicas de ${activeArtist.name}...`
                 : activeCustomPlaylist
-                ? `Carregando faixas da playlist ${activeCustomPlaylist.name}...`
+                ? `Carregando faixas ${activeCustomPlaylist.type === 'album' ? 'do álbum' : 'da playlist'} ${activeCustomPlaylist.name}...`
                 : `Sintonizando clássicos de ${activeGenre.name}...`}
             </h3>
             <p className="text-xs text-spotify-subdued mt-1 max-w-xs">
               {activeArtist
                 ? 'Buscando os maiores sucessos e áudios originais do artista.'
+                : activeCustomPlaylist
+                ? (activeCustomPlaylist.type === 'album' ? 'Buscando as faixas do álbum e prévias de áudio.' : 'Buscando faixas e prévias de áudio da playlist.')
                 : 'Buscando as faixas mais aclamadas dos mestres na Apple Search API.'}
             </p>
           </div>
@@ -370,7 +372,7 @@ export default function App() {
                 </span>
               ) : activeCustomPlaylist ? (
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-spotify-green/10 border border-spotify-green/40 text-[11px] font-semibold text-spotify-green shadow-sm max-w-full">
-                  <span className="truncate">Playlist: {activeCustomPlaylist.name}</span>
+                  <span className="truncate">{activeCustomPlaylist.type === 'album' ? 'Álbum' : 'Playlist'}: {activeCustomPlaylist.name}</span>
                   <span className="text-neutral-500 shrink-0">•</span>
                   <span className="shrink-0">{catalog.length} faixas</span>
                 </span>
